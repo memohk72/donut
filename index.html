@@ -1,37 +1,1118 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
-    <title>donut-universe</title>
-    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
-    <style id="expo-reset">
-      /* These styles make the body full-height */
-      html,
-      body {
-        height: 100%;
-      }
-      /* These styles disable body scrolling if you are using <ScrollView> */
-      body {
-        overflow: hidden;
-      }
-      /* These styles make the root element full-height */
-      #root {
-        display: flex;
-        height: 100%;
-        flex: 1;
-      }
-    </style>
-  <link rel="preload" href="/donut/_expo/static/css/animated-icon.module-eec65aa47fc61787231f45ae14d688f6.css" as="style"><link rel="stylesheet" href="/donut/_expo/static/css/animated-icon.module-eec65aa47fc61787231f45ae14d688f6.css"><link rel="preload" href="/donut/_expo/static/css/global-87fd0564cfa78f37afcb8d7603e15d75.css" as="style"><link rel="stylesheet" href="/donut/_expo/static/css/global-87fd0564cfa78f37afcb8d7603e15d75.css"></head>
+// src/app/index.tsx
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, View, Dimensions, Text, PanResponder, Image, TouchableOpacity, StatusBar, FlatList, ScrollView, Platform, Linking, TextInput } from 'react-native';
+import { Stack } from 'expo-router';
 
-  <body>
-    <!-- Use static rendering with Expo Router to support running without JavaScript. -->
-    <noscript>
-      You need to enable JavaScript to run this app.
-    </noscript>
-    <!-- The root element for your Expo app. -->
-    <div id="root"></div>
-  <script src="/donut/_expo/static/js/web/entry-79b9c52d1c55f00f7011289af72955b4.js" defer></script>
-</body>
-</html>
+const { width: MAX_WIDTH, height: MAX_HEIGHT } = Dimensions.get('window');
+const WORLD_SIZE = 1000000;
+const CENTER_X = MAX_WIDTH / 2;
+const CENTER_Y = MAX_HEIGHT / 2;
+const TOTAL_GLOBAL_DONUTS = 10000;
+
+const CHAR_BASE_SIZE = 65; 
+const DONUT_BASE_SIZE = 45;
+const POWERUP_BASE_SIZE = 52.5;
+
+const FOOD_EMOJIS = ['🍩', '🧁', '🍦', '🍬', '🍭', '🍪', '🍰', '🍫'];
+
+const CHAR_COLORS = ['#00e5ff', '#ff00ff', '#bfff00', '#ff69b4', '#ffffff'];
+
+const generateColors = () => {
+  const colors = [];
+  for (let i = 0; i < 1000; i++) {
+    if (i === 0) {
+      colors.push('#ff69b4');
+      continue;
+    }
+    const hue = (i * 137.5) % 360; 
+    const sat = 50 + (i % 50);
+    const lit = 40 + (i % 40);
+    colors.push(`hsl(${hue}, ${sat}%, ${lit}%)`);
+  }
+  return colors;
+};
+const ALL_COLORS = generateColors();
+
+const getLevelColor = (lvl) => {
+  const colors = ['#ff0000', '#00ff00', '#ffff00', '#0000ff', '#ff00ff', '#00ffff', '#ffffff', '#ff8800', '#8800ff', '#00ff88'];
+  return colors[(lvl - 1) % colors.length];
+};
+
+const getDefaultDonutDescription = (index) => {
+  if (index === 0) return "Homer Simpson's favorite snack – fun, pink glazed doughnuts with sprinkles, aka The Simpsons Doughnuts!";
+  if (index >= 990) return "An incredibly rare, mythical pastry. Only the most dedicated collectors have ever seen its glow.";
+  const flavors = ["Strawberry", "Blueberry", "Vanilla Bean", "Dark Chocolate", "Matcha Green Tea", "Salted Caramel", "Mango Tango", "Taro Root", "Zesty Lemon", "Wild Raspberry"];
+  const textures = ["with a dusting of powdered sugar.", "topped with crunchy sprinkles.", "with a rich, gooey center.", "lightly glazed to perfection.", "drizzled with artisan syrup."];
+  return `A delicious ${flavors[index % flavors.length]} donut, ${textures[(index * 3) % textures.length]}`;
+};
+
+let memoryLeaderboard = [];
+const saveLeaderboard = (lb) => {
+  memoryLeaderboard = lb;
+  if (Platform.OS === 'web') {
+    try { localStorage.setItem('donut_leaderboard', JSON.stringify(lb)); } catch (e) {}
+  }
+};
+const loadLeaderboard = () => {
+  if (Platform.OS === 'web') {
+    try {
+      const stored = localStorage.getItem('donut_leaderboard');
+      if (stored) return JSON.parse(stored);
+    } catch (e) {}
+  }
+  return memoryLeaderboard;
+};
+
+const savePlayerPrefs = (prefs) => {
+  if (Platform.OS === 'web') {
+    try { localStorage.setItem('donut_prefs', JSON.stringify(prefs)); } catch (e) {}
+  }
+};
+const loadPlayerPrefs = () => {
+  if (Platform.OS === 'web') {
+    try {
+      const stored = localStorage.getItem('donut_prefs');
+      if (stored) return JSON.parse(stored);
+    } catch (e) {}
+  }
+  return { nickname: '', color: CHAR_COLORS[0] };
+};
+
+export default function App() {
+  const [gameState, setGameState] = useState('start'); 
+  const [previousState, setPreviousState] = useState('playing');
+  const [playerPrefs, setPlayerPrefs] = useState(loadPlayerPrefs());
+  
+  const [level, setLevel] = useState(1);
+  const [score, setScore] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(60);
+  const [inventory, setInventory] = useState([]);
+  const [donutData, setDonutData] = useState({});
+  const [leaderboard, setLeaderboard] = useState([]);
+  
+  const [player, setPlayer] = useState({ size: CHAR_BASE_SIZE, eatPulse: 1 });
+  const [playerRender, setPlayerRender] = useState({ eyeScaleY: 1, pupilX: 0, pupilY: 0, textureOp: 0 });
+  const [camera, setCamera] = useState({ x: WORLD_SIZE / 2 - CENTER_X, y: WORLD_SIZE / 2 - CENTER_Y });
+  
+  const [items, setItems] = useState([]);
+  const [eatenItems, setEatenItems] = useState([]);
+  const [taps, setTaps] = useState([]);
+  const [bgFoods, setBgFoods] = useState([]);
+  
+  const [shieldActive, setShieldActive] = useState(false);
+  const [isSlowed, setIsSlowed] = useState(false);
+  const [showLevelUp, setShowLevelUp] = useState(false);
+  
+  const [selectedSticker, setSelectedSticker] = useState(null);
+  const [adminViewLevel, setAdminViewLevel] = useState(1);
+  
+  const pos = useRef({ x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 });
+  const targetPoint = useRef(null);
+  const pupilPos = useRef({ x: 0, y: 0 });
+  const blinkState = useRef(1); 
+  const eyeScaleY = useRef(1);
+  const charTextureOpacity = useRef(0);
+  
+  const itemsRef = useRef([]);
+  const eatenItemsRef = useRef([]);
+  const tapsRef = useRef([]);
+  const trailsRef = useRef({ 1: [] });
+  const eatPulseRef = useRef(1);
+  
+  const gameStateRef = useRef('start');
+  const levelRef = useRef(1);
+  const scoreRef = useRef(0);
+  const inventoryRef = useRef([]);
+  const globalDonutPoolRef = useRef(TOTAL_GLOBAL_DONUTS);
+  
+  const frameCountRef = useRef(0);
+  const levelFramesRef = useRef(0);
+  const timeLeftRef = useRef(60);
+  
+  const lastColorRef = useRef(null);
+  const colorStreakRef = useRef(0);
+  
+  const shieldActiveRef = useRef(false);
+  const isSlowedRef = useRef(false);
+  const shieldTimerRef = useRef(null);
+  const levelUpTimerRef = useRef(null);
+
+  const bgRef = useRef(Array.from({ length: 50 }).map(() => ({
+    x: Math.random() * MAX_WIDTH * 3,
+    y: Math.random() * MAX_HEIGHT * 3,
+    size: Math.random() * 25 + 15,
+    opacity: 0.5, 
+    emoji: FOOD_EMOJIS[Math.floor(Math.random() * FOOD_EMOJIS.length)]
+  })));
+
+  useEffect(() => {
+    // ---- ANTI-ZOOM INJECTION ----
+    if (Platform.OS === 'web') {
+      const style = document.createElement('style');
+      style.innerHTML = `
+        body, html, #root {
+          touch-action: none;
+          -webkit-touch-callout: none;
+          user-select: none;
+          -webkit-user-select: none;
+          overflow: hidden;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    // -----------------------------
+
+    setPlayerPrefs(loadPlayerPrefs());
+    fetch('/donut_data.json')
+      .then(res => res.json())
+      .then(data => setDonutData(data))
+      .catch(() => console.log('Matrix Link failed.'));
+    setLeaderboard(loadLeaderboard());
+  }, []);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderMove: (evt) => { 
+        if (gameStateRef.current !== 'playing') return;
+        const dx = evt.nativeEvent.pageX - CENTER_X;
+        const dy = evt.nativeEvent.pageY - CENTER_Y;
+        targetPoint.current = { x: pos.current.x + dx, y: pos.current.y + dy };
+      },
+      onPanResponderGrant: (evt) => { 
+        if (gameStateRef.current !== 'playing') return;
+        const dx = evt.nativeEvent.pageX - CENTER_X;
+        const dy = evt.nativeEvent.pageY - CENTER_Y;
+        targetPoint.current = { x: pos.current.x + dx, y: pos.current.y + dy };
+        
+        tapsRef.current.push({ 
+          id: Math.random().toString(), 
+          x: evt.nativeEvent.pageX, 
+          y: evt.nativeEvent.pageY, 
+          size: 5, opacity: 1, speed: 6,
+          isScreenSpace: true
+        });
+
+        if (!trailsRef.current[levelRef.current]) trailsRef.current[levelRef.current] = [];
+        trailsRef.current[levelRef.current].push({ 
+          type: 'tap', x: pos.current.x + dx, y: pos.current.y + dy, time: levelFramesRef.current / 60 
+        });
+      },
+      onPanResponderRelease: () => {}
+    })
+  ).current;
+
+  const submitCurrentScore = () => {
+    if (scoreRef.current > 0) {
+      const newEntry = { name: playerPrefs.nickname || 'Guest', score: scoreRef.current, date: new Date().toLocaleDateString() };
+      const newLb = [...leaderboard, newEntry].sort((a, b) => b.score - a.score).slice(0, 10);
+      setLeaderboard(newLb);
+      saveLeaderboard(newLb);
+    }
+  };
+
+  const handleGameOver = (status) => {
+    submitCurrentScore();
+    gameStateRef.current = status;
+    setGameState(status);
+  };
+
+  const resetAllStats = () => {
+    levelRef.current = 1;
+    scoreRef.current = 0;
+    timeLeftRef.current = 60;
+    frameCountRef.current = 0;
+    levelFramesRef.current = 0;
+    globalDonutPoolRef.current = TOTAL_GLOBAL_DONUTS;
+    inventoryRef.current = [];
+    itemsRef.current = [];
+    eatenItemsRef.current = [];
+    tapsRef.current = [];
+    trailsRef.current = { 1: [] };
+    eatPulseRef.current = 1;
+    pos.current = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+    targetPoint.current = null;
+    pupilPos.current = { x: 0, y: 0 };
+    charTextureOpacity.current = 0;
+    shieldActiveRef.current = false;
+    isSlowedRef.current = false;
+    colorStreakRef.current = 0;
+    lastColorRef.current = null;
+    clearTimeout(shieldTimerRef.current);
+    clearTimeout(levelUpTimerRef.current);
+    
+    setLevel(1);
+    setScore(0);
+    setTimeLeft(60);
+    setInventory([]);
+    setShieldActive(false);
+    setIsSlowed(false);
+    setShowLevelUp(false);
+    setSelectedSticker(null);
+    setAdminViewLevel(1);
+    setItems([]);
+    setEatenItems([]);
+  };
+
+  const startGame = () => {
+    if (!playerPrefs.nickname.trim()) return;
+    savePlayerPrefs(playerPrefs); 
+    resetAllStats();
+    setGameState('tutorial');
+    gameStateRef.current = 'tutorial';
+  };
+
+  const completeTutorial = () => {
+    setGameState('playing');
+    gameStateRef.current = 'playing';
+  };
+
+  const restartGame = () => {
+    submitCurrentScore();
+    resetAllStats();
+    setGameState('playing');
+    gameStateRef.current = 'playing';
+  };
+
+  const goToMainMenu = () => {
+    submitCurrentScore();
+    gameStateRef.current = 'start';
+    setGameState('start');
+  }
+
+  const openOverlay = (type) => {
+    setPreviousState(gameStateRef.current);
+    setGameState(type);
+    gameStateRef.current = type;
+  };
+
+  const closeOverlay = () => {
+    setGameState(previousState);
+    gameStateRef.current = previousState;
+    setSelectedSticker(null);
+  };
+
+  const exportTrailsCSV = () => {
+    let csvContent = "level,event_type,time_seconds,x,y,color_index\n";
+    Object.keys(trailsRef.current).forEach(lvl => {
+      trailsRef.current[lvl].forEach((p) => {
+        csvContent += `${lvl},${p.type},${p.time.toFixed(3)},${p.x.toFixed(2)},${p.y.toFixed(2)},${p.colorIndex !== undefined ? p.colorIndex : ''}\n`;
+      });
+    });
+
+    if (Platform.OS === 'web') {
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", "player_trails.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      console.log(csvContent);
+      alert("CSV Exported.");
+    }
+  };
+
+  const getDonutInfo = (index) => {
+    const key = String(index);
+    if (donutData[key]) {
+      return {
+        title: donutData[key].name || `Donut #${index + 1}`,
+        desc: donutData[key].desc || getDefaultDonutDescription(index),
+        url: donutData[key].url || null
+      };
+    }
+    return {
+      title: `Donut #${index + 1}`,
+      desc: getDefaultDonutDescription(index),
+      url: null
+    };
+  };
+
+  const displayNick = playerPrefs.nickname.length > 20 ? playerPrefs.nickname.substring(0, 20) + '...' : playerPrefs.nickname;
+
+  useEffect(() => {
+    let animationFrameId;
+    const loop = () => {
+      if (gameStateRef.current === 'playing') {
+        frameCountRef.current += 1;
+        levelFramesRef.current += 1;
+        
+        if (frameCountRef.current % 60 === 0) {
+          timeLeftRef.current -= 1;
+          setTimeLeft(timeLeftRef.current);
+          if (timeLeftRef.current <= 0) {
+            handleGameOver('gameover');
+          }
+        }
+
+        // Realistic Eye Blinking
+        if (Math.random() < 0.01 && blinkState.current === 1) blinkState.current = 0; 
+        if (blinkState.current === 0) {
+            eyeScaleY.current = Math.max(0.1, eyeScaleY.current - 0.2);
+            if (eyeScaleY.current <= 0.1) blinkState.current = 2; 
+        } else if (blinkState.current === 2) {
+            eyeScaleY.current = Math.min(1, eyeScaleY.current + 0.2);
+            if (eyeScaleY.current >= 1) blinkState.current = 1; 
+        }
+
+        // Texture fade out
+        if (charTextureOpacity.current > 0) {
+             charTextureOpacity.current = Math.max(0, charTextureOpacity.current - 0.01);
+        }
+
+        let lerpSpeed = 0.15; 
+        let currentSize = CHAR_BASE_SIZE; 
+        
+        if (shieldActiveRef.current) lerpSpeed = 0.25; 
+        else if (isSlowedRef.current) {
+          lerpSpeed = 0.03; 
+          currentSize = CHAR_BASE_SIZE * 2; 
+        }
+
+        let targetPupilX = 0, targetPupilY = 0;
+
+        if (targetPoint.current) {
+            const dx = targetPoint.current.x - pos.current.x;
+            const dy = targetPoint.current.y - pos.current.y;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist > 5) { 
+                 pos.current.x += dx * lerpSpeed;
+                 pos.current.y += dy * lerpSpeed;
+            } else {
+                 targetPoint.current = null; 
+            }
+
+            if (dist > 0) {
+                targetPupilX = (dx / dist) * (CHAR_BASE_SIZE * 0.15);
+                targetPupilY = (dy / dist) * (CHAR_BASE_SIZE * 0.15);
+            }
+        }
+
+        pupilPos.current.x += (targetPupilX - pupilPos.current.x) * 0.2;
+        pupilPos.current.y += (targetPupilY - pupilPos.current.y) * 0.2;
+
+        if (pos.current.x < 0) pos.current.x = 0;
+        if (pos.current.x > WORLD_SIZE) pos.current.x = WORLD_SIZE;
+        if (pos.current.y < 0) pos.current.y = 0;
+        if (pos.current.y > WORLD_SIZE) pos.current.y = WORLD_SIZE;
+
+        const camX = pos.current.x - CENTER_X;
+        const camY = pos.current.y - CENTER_Y;
+
+        if (frameCountRef.current % 3 === 0) {
+          if (!trailsRef.current[levelRef.current]) trailsRef.current[levelRef.current] = [];
+          trailsRef.current[levelRef.current].push({ 
+            type: 'move', x: pos.current.x, y: pos.current.y, time: levelFramesRef.current / 60 
+          });
+        }
+
+        eatPulseRef.current += (1 - eatPulseRef.current) * 0.15;
+
+        tapsRef.current = tapsRef.current.filter(tap => {
+          tap.size += tap.speed;
+          tap.opacity -= 0.05;
+          return tap.opacity > 0;
+        });
+
+        eatenItemsRef.current = eatenItemsRef.current.filter(item => {
+          item.scale += 0.1;
+          item.opacity -= 0.08;
+          return item.opacity > 0;
+        });
+
+        itemsRef.current.forEach(item => {
+          if (item.type === 'donut') {
+            item.rotation += 0.5;
+            const dx = pos.current.x - item.worldX;
+            const dy = pos.current.y - item.worldY;
+            const dist = Math.hypot(dx, dy);
+            
+            if (dist < 300 && dist > 0) {
+              item.worldX += (dx / dist) * 1.5;
+              item.worldY += (dy / dist) * 1.5;
+            }
+          }
+        });
+
+        for (let i = 0; i < itemsRef.current.length; i++) {
+          for (let j = i + 1; j < itemsRef.current.length; j++) {
+            const itemA = itemsRef.current[i];
+            const itemB = itemsRef.current[j];
+            const dx = itemA.worldX - itemB.worldX;
+            const dy = itemA.worldY - itemB.worldY;
+            const dist = Math.hypot(dx, dy);
+            const minDistance = (itemA.size / 2) + (itemB.size / 2) + 5; 
+
+            if (dist < minDistance && dist > 0) {
+              const overlap = minDistance - dist;
+              const nx = dx / dist;
+              const ny = dy / dist;
+              
+              itemA.worldX += nx * overlap * 0.5;
+              itemA.worldY += ny * overlap * 0.5;
+              itemB.worldX -= nx * overlap * 0.5;
+              itemB.worldY -= ny * overlap * 0.5;
+            }
+          }
+        }
+
+        itemsRef.current = itemsRef.current.filter(item => {
+          const dist = Math.hypot(pos.current.x - item.worldX, pos.current.y - item.worldY);
+          
+          if (dist > Math.max(MAX_WIDTH, MAX_HEIGHT) * 1.5) {
+            if (item.type === 'donut') globalDonutPoolRef.current++;
+            return false;
+          }
+
+          if (dist < (currentSize / 2) + (item.size / 2)) {
+            if (item.type === 'donut') {
+              scoreRef.current += 10; 
+              eatenItemsRef.current.push({ ...item, scale: 1, opacity: 1 });
+              eatPulseRef.current = 1.4; 
+              charTextureOpacity.current = 1.0;
+              
+              setTimeout(() => {
+                globalDonutPoolRef.current++;
+              }, 10000);
+
+              trailsRef.current[levelRef.current].push({ 
+                type: 'donut', x: pos.current.x, y: pos.current.y, time: levelFramesRef.current / 60, colorIndex: item.colorIndex
+              });
+
+              if (!inventoryRef.current.includes(item.colorIndex)) {
+                inventoryRef.current.push(item.colorIndex);
+                setInventory([...inventoryRef.current]);
+
+                const targetIndices = Array.from({length: 10}, (_, i) => (levelRef.current - 1) * 10 + i);
+                const hasAll = targetIndices.every(idx => inventoryRef.current.includes(idx));
+                
+                if (hasAll) {
+                  if (inventoryRef.current.length >= 1000) {
+                    handleGameOver('game_won');
+                  } else {
+                    levelRef.current += 1;
+                    setLevel(levelRef.current); 
+                    timeLeftRef.current += 60;
+                    setTimeLeft(timeLeftRef.current);
+                    levelFramesRef.current = 0;
+                    
+                    if (!trailsRef.current[levelRef.current]) {
+                      trailsRef.current[levelRef.current] = [];
+                    }
+                    
+                    setShowLevelUp(true);
+                    clearTimeout(levelUpTimerRef.current);
+                    levelUpTimerRef.current = setTimeout(() => {
+                      setShowLevelUp(false);
+                    }, 3000);
+                  }
+                }
+              }
+
+              if (!shieldActiveRef.current) {
+                if (item.colorIndex === lastColorRef.current) {
+                  colorStreakRef.current += 1;
+                } else {
+                  lastColorRef.current = item.colorIndex;
+                  colorStreakRef.current = 1;
+                }
+
+                if (colorStreakRef.current >= 3) {
+                  isSlowedRef.current = true;
+                  setIsSlowed(true);
+                  colorStreakRef.current = 0;
+                }
+              }
+            } else if (item.type === 'energy') {
+              scoreRef.current += 50;
+              isSlowedRef.current = false;
+              setIsSlowed(false);
+              colorStreakRef.current = 0;
+              lastColorRef.current = null;
+              
+              trailsRef.current[levelRef.current].push({ 
+                type: 'energy', x: pos.current.x, y: pos.current.y, time: levelFramesRef.current / 60 
+              });
+
+            } else if (item.type === 'shield') {
+              shieldActiveRef.current = true;
+              setShieldActive(true);
+              
+              trailsRef.current[levelRef.current].push({ 
+                type: 'shield', x: pos.current.x, y: pos.current.y, time: levelFramesRef.current / 60 
+              });
+
+              clearTimeout(shieldTimerRef.current);
+              shieldTimerRef.current = setTimeout(() => {
+                shieldActiveRef.current = false;
+                setShieldActive(false);
+              }, 10000);
+            }
+            
+            setScore(scoreRef.current);
+            return false; 
+          }
+          return true; 
+        });
+
+        if (Math.random() < 0.08 && itemsRef.current.length < 50) {
+          const rand = Math.random();
+          const type = rand > 0.98 ? 'shield' : rand > 0.95 ? 'energy' : 'donut';
+          
+          if (type === 'donut' && globalDonutPoolRef.current <= 0) {
+            // Limit reached
+          } else {
+            const newSize = type === 'donut' ? DONUT_BASE_SIZE : POWERUP_BASE_SIZE;
+            const angle = Math.random() * Math.PI * 2;
+            const dist = Math.max(MAX_WIDTH, MAX_HEIGHT) / 2 + Math.random() * 200;
+            const newX = pos.current.x + Math.cos(angle) * dist;
+            const newY = pos.current.y + Math.sin(angle) * dist;
+
+            if (newX > 0 && newX < WORLD_SIZE && newY > 0 && newY < WORLD_SIZE) {
+              let colorIdx = 0;
+              if (type === 'donut') {
+                globalDonutPoolRef.current--; 
+                const colorRand = Math.random();
+                if (colorRand < 0.25) { 
+                  const targetIndices = Array.from({length: 10}, (_, i) => (levelRef.current - 1) * 10 + i);
+                  const missing = targetIndices.filter(idx => !inventoryRef.current.includes(idx));
+                  if (missing.length > 0) {
+                    colorIdx = missing[Math.floor(Math.random() * missing.length)];
+                  } else {
+                    colorIdx = targetIndices[Math.floor(Math.random() * targetIndices.length)];
+                  }
+                } else if (colorRand < 0.99) { 
+                  colorIdx = Math.floor(Math.random() * 800) + 100;
+                } else { 
+                  colorIdx = Math.floor(Math.random() * 10) + 990;
+                }
+              }
+
+              itemsRef.current.push({
+                id: Math.random().toString(), 
+                worldX: newX, worldY: newY, 
+                size: newSize, type: type, rotation: 0,
+                colorIndex: colorIdx,
+                color: type === 'donut' ? ALL_COLORS[colorIdx] : null
+              });
+            }
+          }
+        }
+
+        setPlayer({ size: currentSize, eatPulse: eatPulseRef.current });
+        setPlayerRender({
+           eyeScaleY: eyeScaleY.current,
+           pupilX: pupilPos.current.x,
+           pupilY: pupilPos.current.y,
+           textureOp: charTextureOpacity.current
+        });
+        setCamera({ x: camX, y: camY });
+        setItems([...itemsRef.current]);
+        setEatenItems([...eatenItemsRef.current]);
+        setTaps([...tapsRef.current]);
+        
+        setBgFoods(bgRef.current.map(item => {
+          const wrapW = MAX_WIDTH * 2;
+          const wrapH = MAX_HEIGHT * 2;
+          return {
+            ...item,
+            renderX: ((item.x - camX * 0.2) % wrapW + wrapW) % wrapW - 100,
+            renderY: ((item.y - camY * 0.2) % wrapH + wrapH) % wrapH - 100
+          };
+        }));
+      }
+      
+      animationFrameId = requestAnimationFrame(loop);
+    };
+    
+    animationFrameId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, []);
+
+  const renderBevel = (size) => (
+    <View style={{
+      position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+      borderRadius: size / 2,
+      borderWidth: size * 0.08,
+      borderTopColor: 'rgba(255,255,255,0.6)',
+      borderLeftColor: 'rgba(255,255,255,0.4)',
+      borderRightColor: 'rgba(0,0,0,0.15)',
+      borderBottomColor: 'rgba(0,0,0,0.3)'
+    }} />
+  );
+
+  const renderItem = (item) => {
+    const screenX = item.worldX - camera.x;
+    const screenY = item.worldY - camera.y;
+
+    if (screenX < -100 || screenX > MAX_WIDTH + 100 || screenY < -100 || screenY > MAX_HEIGHT + 100) return null;
+
+    if (item.type === 'donut') {
+      return (
+        <View key={item.id} style={[styles.collectible, { left: screenX - item.size / 2, top: screenY - item.size / 2, width: item.size, height: item.size, transform: [{ rotate: `${item.rotation || 0}deg` }] }]}>
+          <View style={{ width: '100%', height: '100%', borderRadius: item.size / 2, backgroundColor: item.color, position: 'absolute', overflow: 'hidden' }}>
+             <Image source={require('../../assets/donut_texture.png')} style={{ width: '100%', height: '100%', position: 'absolute' }} resizeMode="cover" />
+             {renderBevel(item.size)}
+             <View style={{ width: '35%', height: '35%', backgroundColor: '#2d1b2e', borderRadius: item.size / 2, position: 'absolute', top: '32.5%', left: '32.5%' }} />
+          </View>
+        </View>
+      );
+    }
+    const source = item.type === 'energy' ? require('../../assets/powerup_green.png') : require('../../assets/shield_powerup.png');
+    return <Image key={item.id} source={source} style={[styles.collectible, { left: screenX - item.size / 2, top: screenY - item.size / 2, width: item.size, height: item.size }]} />;
+  };
+
+  const renderEatenItem = (item) => {
+    const screenX = item.worldX - camera.x;
+    const screenY = item.worldY - camera.y;
+    return (
+      <View key={item.id + '_eaten'} style={[styles.collectible, { left: screenX - item.size / 2, top: screenY - item.size / 2, width: item.size, height: item.size, opacity: item.opacity, transform: [{ rotate: `${item.rotation || 0}deg` }, { scale: item.scale }] }]}>
+        <View style={{ width: '100%', height: '100%', borderRadius: item.size / 2, backgroundColor: item.color, position: 'absolute', overflow: 'hidden' }}>
+           <Image source={require('../../assets/donut_texture.png')} style={{ width: '100%', height: '100%', position: 'absolute' }} resizeMode="cover" />
+           {renderBevel(item.size)}
+           <View style={{ width: '35%', height: '35%', backgroundColor: '#2d1b2e', borderRadius: item.size / 2, position: 'absolute', top: '32.5%', left: '32.5%' }} />
+        </View>
+      </View>
+    );
+  };
+
+  const renderSticker = ({ item: idx }) => {
+    const collected = inventory.includes(idx);
+    return (
+      <TouchableOpacity onPress={() => setSelectedSticker({ idx, collected })} style={{ margin: 6 }}>
+        <View style={{ width: 45, height: 45 }}>
+          <View style={{ width: '100%', height: '100%', borderRadius: 22.5, backgroundColor: ALL_COLORS[idx], opacity: collected ? 1 : 0.3, position: 'absolute', overflow: 'hidden' }}>
+             <Image source={require('../../assets/donut_texture.png')} style={{ width: '100%', height: '100%', position: 'absolute' }} resizeMode="cover" />
+             {renderBevel(45)}
+             <View style={{ width: '35%', height: '35%', backgroundColor: '#1a1b2e', borderRadius: 22.5, position: 'absolute', top: '32.5%', left: '32.5%' }} />
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderAdminTrailLines = () => {
+    const data = trailsRef.current[adminViewLevel] || [];
+    if (data.length === 0) return null;
+
+    const color = getLevelColor(adminViewLevel);
+    const elements = [];
+    
+    const minX = Math.min(...data.map(p => p.x));
+    const maxX = Math.max(...data.map(p => p.x));
+    const minY = Math.min(...data.map(p => p.y));
+    const maxY = Math.max(...data.map(p => p.y));
+
+    const padding = 100;
+    const rangeX = (maxX - minX) || 1;
+    const rangeY = (maxY - minY) || 1;
+    const scaleX = (MAX_WIDTH - padding * 2) / rangeX;
+    const scaleY = (MAX_HEIGHT - padding * 2) / rangeY;
+    const scale = Math.min(scaleX, scaleY);
+
+    const mapX = (x) => padding + (x - minX) * scale;
+    const mapY = (y) => padding + (y - minY) * scale;
+
+    const moves = data.filter(p => p.type === 'move');
+    
+    for (let i = 1; i < moves.length; i++) {
+      const p1 = moves[i-1];
+      const p2 = moves[i];
+      const sx1 = mapX(p1.x);
+      const sy1 = mapY(p1.y);
+      const sx2 = mapX(p2.x);
+      const sy2 = mapY(p2.y);
+
+      const cx = (sx1 + sx2) / 2;
+      const cy = (sy1 + sy2) / 2;
+      const length = Math.hypot(sx2 - sx1, sy2 - sy1);
+      const angle = Math.atan2(sy2 - sy1, sx2 - sx1) * 180 / Math.PI;
+      
+      elements.push(
+        <View key={`line_${i}`} style={{ position: 'absolute', left: cx - length / 2, top: cy - 1, width: length, height: 2, backgroundColor: color, transform: [{rotate: `${angle}deg`}] }} />
+      );
+    }
+
+    data.filter(p => p.type !== 'move').forEach((p, idx) => {
+      let dotColor = '#fff';
+      let size = 16;
+      if (p.type === 'energy') dotColor = '#00ff00';
+      else if (p.type === 'shield') dotColor = '#00ffff';
+      else if (p.type === 'tap') { dotColor = '#000000'; size = 12; }
+      else if (p.type === 'donut') { dotColor = ALL_COLORS[p.colorIndex]; size = 12; }
+      
+      const sx = mapX(p.x);
+      const sy = mapY(p.y);
+
+      elements.push(
+        <View key={`dot_${idx}`} style={{ position: 'absolute', left: sx - (size/2), top: sy - (size/2), width: size, height: size, borderRadius: size/2, backgroundColor: dotColor, borderWidth: (p.type === 'donut' || p.type === 'tap') ? 1 : 2, borderColor: '#fff', zIndex: p.type === 'tap' ? 2 : 1 }} />
+      );
+    });
+
+    return { elements, minX, maxX, minY, maxY };
+  };
+
+  const adminTrailData = gameState === 'admin' ? renderAdminTrailLines() : null;
+
+  const getAdminLevelTime = () => {
+    const data = trailsRef.current[adminViewLevel];
+    if (!data || data.length === 0) return 0;
+    return data[data.length - 1].time.toFixed(1);
+  };
+
+  if (gameState === 'start') {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+         <StatusBar hidden={true} />
+         <Text style={[styles.overlayTitleText, { fontSize: 60 }]}>D🍩NUT</Text>
+         
+         <TextInput 
+           style={styles.nickInput}
+           placeholder="Type in a nickname..."
+           placeholderTextColor="#888"
+           value={playerPrefs.nickname}
+           onChangeText={(txt) => setPlayerPrefs({...playerPrefs, nickname: txt})}
+           maxLength={20}
+         />
+         
+         <View style={{ flexDirection: 'row', marginTop: 30 }}>
+             {CHAR_COLORS.map(color => (
+                 <TouchableOpacity key={color} onPress={() => setPlayerPrefs({...playerPrefs, color: color})} style={{ marginHorizontal: 5 }}>
+                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: color, borderWidth: playerPrefs.color === color ? 3 : 0, borderColor: '#fff' }} />
+                 </TouchableOpacity>
+             ))}
+         </View>
+
+         <TouchableOpacity style={[styles.button, { marginTop: 40 }]} onPress={startGame}>
+            <Text style={styles.buttonText}>PLAY GAME</Text>
+         </TouchableOpacity>
+
+         <TouchableOpacity style={[styles.button, { marginTop: 15, backgroundColor: 'rgba(255,255,255,0.2)' }]} onPress={() => openOverlay('leaderboard')}>
+            <Text style={[styles.buttonText, { color: '#fff' }]}>LEADERBOARD</Text>
+         </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const charColor = playerPrefs.color;
+
+  return (
+    <View style={styles.container} {...panResponder.panHandlers}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <StatusBar hidden={true} />
+      
+      {bgFoods.map((item, i) => (
+        <Text key={i} pointerEvents="none" selectable={false} style={[styles.bgFood, { left: item.renderX, top: item.renderY, fontSize: item.size, opacity: item.opacity }]}>
+          {item.emoji}
+        </Text>
+      ))}
+      
+      <View pointerEvents="box-none" style={styles.topHeaderBar}>
+          <View style={{ flexDirection: 'row' }}>
+              <TouchableOpacity style={[styles.headerBtn, { marginRight: 10 }]} onPress={goToMainMenu}>
+                  <Text style={styles.headerBtnText}>MAIN MENU</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.headerBtn, { backgroundColor: 'rgba(255,100,200,0.4)' }]} onPress={restartGame}>
+                  <Text style={styles.headerBtnText}>RESTART</Text>
+              </TouchableOpacity>
+          </View>
+          <Text style={styles.dynamicTitleText}>D🍩NUT</Text>
+      </View>
+
+      <View style={styles.topHUD} pointerEvents="none">
+        <View style={styles.hudLeft}>
+          <Text style={styles.hudText}>Score: {score}</Text>
+          <View style={{ width: 15 }} />
+          <Text style={styles.hudText}>Level: {level}</Text>
+        </View>
+        <Text style={styles.hudTextTime}>{timeLeft}s</Text>
+      </View>
+
+      <View style={styles.topButtonsContainer}>
+        <TouchableOpacity style={styles.topBtn} onPress={() => openOverlay('level_goals')}>
+          <Text style={styles.topBtnText}>LEVEL GOALS</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.topBtn, { backgroundColor: 'rgba(255,100,200,0.3)' }]} onPress={() => openOverlay('collection')}>
+          <Text style={styles.topBtnText}>STICKERS ({inventory.length}/1000)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.topBtn, { backgroundColor: 'rgba(255,50,50,0.4)' }]} onPress={() => openOverlay('admin')}>
+          <Text style={styles.topBtnText}>TRAIL</Text>
+        </TouchableOpacity>
+      </View>
+      
+      {isSlowed && <Text style={styles.slowText}>SUGAR OVERLOAD! FIND GREEN ENERGY!</Text>}
+      {shieldActive && <Text style={styles.shieldText}>IMMUNE + 2X SPEED!</Text>}
+
+      {taps.map(tap => (
+        <View key={tap.id} pointerEvents="none" style={[styles.tapEffect, { 
+          left: tap.isScreenSpace ? tap.x - tap.size / 2 : tap.x - camera.x - tap.size / 2, 
+          top: tap.isScreenSpace ? tap.y - tap.size / 2 : tap.y - camera.y - tap.size / 2, 
+          width: tap.size, height: tap.size, borderRadius: tap.size / 2, opacity: tap.opacity 
+        }]} />
+      ))}
+
+      {eatenItems.map(renderEatenItem)}
+      {items.map(renderItem)}
+
+      <View pointerEvents="none" style={[styles.player, { left: CENTER_X - player.size / 2, top: CENTER_Y - player.size / 2, width: player.size, height: player.size, transform: [{ scale: player.eatPulse }] }]}>
+         <View style={{ width: '100%', height: '100%', borderRadius: player.size/2, backgroundColor: charColor, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' }}>
+            
+            {playerRender.textureOp > 0 && (
+               <Image source={require('../../assets/donut_texture.png')} style={{ width: '100%', height: '100%', position: 'absolute', opacity: playerRender.textureOp }} resizeMode="cover" />
+            )}
+
+            {renderBevel(player.size)}
+
+            <View style={{ width: '60%', height: '60%', backgroundColor: 'white', borderRadius: 100, justifyContent: 'center', alignItems: 'center', transform: [{ scaleY: playerRender.eyeScaleY }] }}>
+                <View style={{ width: '45%', height: '45%', backgroundColor: 'black', borderRadius: 100, transform: [{ translateX: playerRender.pupilX }, { translateY: playerRender.pupilY }] }} />
+            </View>
+
+         </View>
+      </View>
+
+      <View pointerEvents="none" style={{ position: 'absolute', left: CENTER_X - 100, top: CENTER_Y - (player.size / 2) - 30, width: 200, alignItems: 'center', zIndex: 10 }}>
+         <Text style={styles.nickText}>{displayNick}</Text>
+      </View>
+
+      {shieldActive && (
+        <Image pointerEvents="none" source={require('../../assets/shield_bubble.png')} style={[styles.shield, { left: CENTER_X - (player.size * 0.75), top: CENTER_Y - (player.size * 0.75), width: player.size * 1.5, height: player.size * 1.5, transform: [{ scale: player.eatPulse }] }]} />
+      )}
+
+      {showLevelUp && (
+        <View pointerEvents="none" style={styles.levelUpNotification}>
+          <Text style={styles.levelUpText}>LEVEL {level} REACHED!</Text>
+          <Text style={styles.levelUpSubText}>+60 SECONDS</Text>
+        </View>
+      )}
+
+      {gameState === 'tutorial' && (
+        <View style={styles.overlay}>
+          <Text style={[styles.overlayTitleText, { fontSize: 48, marginBottom: 40 }]}>HOW TO PLAY</Text>
+          <Text style={styles.tutorialText}>👆 1. Tap anywhere to Move</Text>
+          <Text style={styles.tutorialText}>🍩 2. Tap / Run into Donuts to Eat</Text>
+          <Text style={styles.tutorialText}>⚡ 3. Collect Powerups for Speed & Shields</Text>
+          <TouchableOpacity style={[styles.button, { marginTop: 50, paddingHorizontal: 60 }]} onPress={completeTutorial}>
+            <Text style={styles.buttonText}>GOT IT!</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {gameState === 'leaderboard' && (
+        <View style={styles.overlay}>
+          <Text style={styles.overlayTitleText}>TOP 10 PLAYERS</Text>
+          <View style={styles.leaderboardBox}>
+            {leaderboard.length === 0 ? (
+               <Text style={{color: '#888', fontStyle: 'italic', padding: 20}}>No scores yet. Play a round to submit your score!</Text>
+            ) : (
+               <FlatList
+                 data={leaderboard}
+                 keyExtractor={(item, index) => index.toString()}
+                 renderItem={({ item, index }) => (
+                   <View style={styles.leaderboardRow}>
+                     <Text style={styles.leaderboardRank}>{index + 1}.</Text>
+                     <Text style={styles.leaderboardName} numberOfLines={1}>{item.name}</Text>
+                     <Text style={styles.leaderboardScore}>{item.score}</Text>
+                   </View>
+                 )}
+               />
+            )}
+          </View>
+          <TouchableOpacity style={styles.button} onPress={closeOverlay}>
+            <Text style={styles.buttonText}>BACK</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {gameState === 'level_goals' && (
+        <View style={styles.overlay}>
+          <Text style={styles.overlayTitleText}>LEVEL {level} GOALS</Text>
+          <Text style={styles.finalScoreText}>Find these 10 colors to advance:</Text>
+          <View style={styles.gridContainer}>
+            {Array.from({length: 10}, (_, i) => (level - 1) * 10 + i).map(idx => {
+                const collected = inventory.includes(idx);
+                return (
+                  <View key={idx} style={{ margin: 5 }}>
+                    <View style={{ width: 50, height: 50, overflow: 'hidden', borderRadius: 25 }}>
+                      <View style={{ width: '100%', height: '100%', backgroundColor: ALL_COLORS[idx], opacity: collected ? 1 : 0.3, position: 'absolute' }} />
+                      <Image source={require('../../assets/donut_texture.png')} style={{ width: '100%', height: '100%', position: 'absolute', opacity: collected ? 1 : 0.3 }} resizeMode="cover" />
+                      {collected && renderBevel(50)}
+                      <View style={{ width: '40%', height: '40%', backgroundColor: 'rgba(45, 27, 46, 0.95)', borderRadius: 10, position: 'absolute', top: '30%', left: '30%' }} />
+                    </View>
+                  </View>
+                );
+            })}
+          </View>
+          <TouchableOpacity style={styles.button} onPress={closeOverlay}>
+            <Text style={styles.buttonText}>RESUME</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {gameState === 'collection' && (
+        <View style={styles.overlay}>
+          <Text style={[styles.overlayTitleText, { fontSize: 32, marginTop: 40 }]}>THE 1000 DONUT COLLECTION</Text>
+          <Text style={styles.highScoreText}>Discovered: {inventory.length} / 1000</Text>
+          <View style={styles.flatListContainer}>
+            <FlatList
+              data={Array.from({length: 1000}, (_, i) => i)}
+              renderItem={renderSticker}
+              keyExtractor={item => item.toString()}
+              numColumns={5}
+              showsVerticalScrollIndicator={false}
+              removeClippedSubviews={true}
+              initialNumToRender={30}
+            />
+          </View>
+          <TouchableOpacity style={[styles.button, { marginVertical: 20 }]} onPress={closeOverlay}>
+            <Text style={styles.buttonText}>RESUME</Text>
+          </TouchableOpacity>
+
+          {selectedSticker !== null && (
+            <View style={styles.tooltipOverlay}>
+              <View style={styles.tooltipBox}>
+                <View style={{ width: 80, height: 80, marginBottom: 15, borderRadius: 40, overflow: 'hidden' }}>
+                  <View style={{ width: '100%', height: '100%', backgroundColor: ALL_COLORS[selectedSticker.idx], opacity: selectedSticker.collected ? 1 : 0.3, position: 'absolute' }} />
+                  <Image source={require('../../assets/donut_texture.png')} style={{ width: '100%', height: '100%', position: 'absolute', opacity: selectedSticker.collected ? 1 : 0.3 }} resizeMode="cover" />
+                  {selectedSticker.collected && renderBevel(80)}
+                  <View style={{ width: '40%', height: '40%', backgroundColor: '#222', borderRadius: 16, position: 'absolute', top: '30%', left: '30%' }} />
+                </View>
+                <Text style={styles.tooltipTitle}>{selectedSticker.collected ? getDonutInfo(selectedSticker.idx).title : 'Unknown Donut'}</Text>
+                <Text style={styles.tooltipDesc}>{selectedSticker.collected ? getDonutInfo(selectedSticker.idx).desc : "Keep playing to unlock the recipe for this mystery donut!"}</Text>
+                {selectedSticker.collected && getDonutInfo(selectedSticker.idx).url && (
+                  <TouchableOpacity style={styles.urlBtn} onPress={() => Linking.openURL(getDonutInfo(selectedSticker.idx).url)}>
+                    <Text style={styles.urlBtnText}>View Full Recipe Online</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity style={[styles.button, { paddingVertical: 10, paddingHorizontal: 20, marginTop: 15 }]} onPress={() => setSelectedSticker(null)}>
+                  <Text style={styles.buttonText}>CLOSE</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </View>
+      )}
+
+      {gameState === 'admin' && (
+        <View style={[styles.overlay, { backgroundColor: '#0a0a1a' }]}>
+          <View pointerEvents="none" style={styles.axesContainer}>
+            <View style={styles.yAxis} />
+            <View style={styles.xAxis} />
+            {adminTrailData && adminTrailData.minX !== undefined && (
+              <>
+                <Text style={styles.coordOrigin}>{Math.floor(adminTrailData.minX)}, {Math.floor(adminTrailData.minY)}</Text>
+                <Text style={styles.coordYMax}>{Math.floor(adminTrailData.minX)}, {Math.floor(adminTrailData.maxY)}</Text>
+                <Text style={styles.coordXMax}>{Math.floor(adminTrailData.maxX)}, {Math.floor(adminTrailData.minY)}</Text>
+              </>
+            )}
+          </View>
+          <View style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }} pointerEvents="none">
+             {adminTrailData ? adminTrailData.elements : null}
+          </View>
+          <Text style={[styles.overlayTitleText, { fontSize: 32, marginTop: 40, zIndex: 10 }]}>TRAIL VIEWER</Text>
+          <ScrollView horizontal style={styles.adminTabsContainer} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 20 }}>
+            {Object.keys(trailsRef.current).map(l => (
+              <TouchableOpacity key={l} style={[styles.adminTab, { borderColor: getLevelColor(parseInt(l)), backgroundColor: adminViewLevel === parseInt(l) ? getLevelColor(parseInt(l)) : 'transparent' }]} onPress={() => setAdminViewLevel(parseInt(l))}>
+                <Text style={[styles.adminTabText, { color: adminViewLevel === parseInt(l) ? '#000' : getLevelColor(parseInt(l)) }]}>Lvl {l}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <View style={styles.adminStatsBox}>
+             <Text style={styles.adminStatsText}>Time to complete: {getAdminLevelTime()}s</Text>
+             <Text style={styles.adminStatsTextSub}>Data Points: {trailsRef.current[adminViewLevel]?.length || 0}</Text>
+             <TouchableOpacity style={[styles.button, { marginTop: 15, paddingVertical: 10, backgroundColor: '#00e5ff' }]} onPress={exportTrailsCSV}>
+                <Text style={[styles.buttonText, { fontSize: 16 }]}>EXPORT CSV DATA</Text>
+             </TouchableOpacity>
+          </View>
+          <TouchableOpacity style={[styles.button, { position: 'absolute', bottom: 30, zIndex: 10 }]} onPress={closeOverlay}>
+            <Text style={styles.buttonText}>EXIT TRAIL</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {gameState === 'game_won' && (
+        <View style={styles.overlay}>
+          <Text style={styles.overlayTitleText}>YOU WIN!</Text>
+          <Text style={styles.highScoreText}>You collected all 1000 donuts!</Text>
+          <Text style={styles.finalScoreText}>Final Score: {score}</Text>
+          <TouchableOpacity style={styles.button} onPress={restartGame}>
+            <Text style={styles.buttonText}>PLAY AGAIN</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {gameState === 'gameover' && (
+        <View style={styles.overlay}>
+          <Text style={styles.overlayTitleText}>TIME'S UP!</Text>
+          <Text style={styles.finalScoreText}>Score: {score}</Text>
+          <Text style={styles.highScoreText}>High Score: {leaderboard[0] ? leaderboard[0].score : 0}</Text>
+          <TouchableOpacity style={styles.button} onPress={restartGame}>
+            <Text style={styles.buttonText}>TRY AGAIN</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#2d1b2e' },
+  bgFood: { position: 'absolute', userSelect: 'none' },
+  topHUD: { position: 'absolute', top: 60, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', zIndex: 10 },
+  hudLeft: { flexDirection: 'row', alignItems: 'center' },
+  hudText: { fontSize: 24, color: 'white', fontWeight: 'bold' },
+  hudTextTime: { fontSize: 32, color: '#00e5ff', fontWeight: 'bold' },
+  topButtonsContainer: { position: 'absolute', top: 110, left: 20, flexDirection: 'row', zIndex: 11 },
+  topBtn: { backgroundColor: 'rgba(255,255,255,0.2)', paddingVertical: 5, paddingHorizontal: 15, borderRadius: 15, marginRight: 10 },
+  topBtnText: { color: 'white', fontWeight: 'bold', fontSize: 14 },
+  slowText: { position: 'absolute', top: 150, left: 20, fontSize: 16, color: 'white', fontWeight: 'bold', zIndex: 10 },
+  shieldText: { position: 'absolute', top: 150, left: 20, fontSize: 16, color: '#bfff00', fontWeight: 'bold', zIndex: 10 },
+  player: { position: 'absolute', zIndex: 3, justifyContent: 'center', alignItems: 'center' },
+  nickText: { color: 'white', fontWeight: 'bold', fontSize: 18, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 3 },
+  nickInput: { backgroundColor: 'rgba(255,255,255,0.1)', color: 'white', fontSize: 24, padding: 15, borderRadius: 10, width: '80%', maxWidth: 400, textAlign: 'center', borderWidth: 2, borderColor: '#ff69b4', marginTop: 40 },
+  collectible: { position: 'absolute', zIndex: 1 },
+  shield: { position: 'absolute', opacity: 0.6, zIndex: 4 },
+  tapEffect: { position: 'absolute', borderWidth: 2, borderColor: 'rgba(0, 229, 255, 0.8)', zIndex: 0 },
+  overlay: { flex: 1, position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(45, 27, 46, 0.95)', justifyContent: 'center', alignItems: 'center', zIndex: 20 },
+  overlayTitleText: { fontSize: 40, color: 'white', fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
+  finalScoreText: { fontSize: 28, color: 'white', marginBottom: 10 },
+  highScoreText: { fontSize: 20, color: '#00e5ff', marginBottom: 20, textAlign: 'center', paddingHorizontal: 20 },
+  button: { backgroundColor: '#bfff00', paddingHorizontal: 40, paddingVertical: 15, borderRadius: 30 },
+  buttonText: { fontSize: 20, color: '#2d1b2e', fontWeight: 'bold' },
+  gridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', maxWidth: 320, marginBottom: 30 },
+  flatListContainer: { flex: 1, width: '100%', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 10, paddingVertical: 10 },
+  levelUpNotification: { position: 'absolute', top: '30%', width: '100%', alignItems: 'center', zIndex: 50 },
+  levelUpText: { fontSize: 40, color: 'white', fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 2, height: 2}, textShadowRadius: 5 },
+  levelUpSubText: { fontSize: 24, color: '#00e5ff', fontWeight: 'bold', marginTop: 10, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 2, height: 2}, textShadowRadius: 5 },
+  tooltipOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', zIndex: 30 },
+  tooltipBox: { backgroundColor: '#222', padding: 25, borderRadius: 20, width: '80%', alignItems: 'center', borderWidth: 2, borderColor: '#444' },
+  tooltipTitle: { fontSize: 24, color: 'white', fontWeight: 'bold', marginBottom: 10 },
+  tooltipDesc: { fontSize: 16, color: '#ccc', textAlign: 'center', lineHeight: 24 },
+  urlBtn: { marginTop: 15, paddingVertical: 8, paddingHorizontal: 15, backgroundColor: 'rgba(0, 229, 255, 0.2)', borderRadius: 10, borderWidth: 1, borderColor: '#00e5ff' },
+  urlBtnText: { color: '#00e5ff', fontWeight: 'bold' },
+  adminTabsContainer: { position: 'absolute', top: 100, height: 60, width: '100%', zIndex: 10 },
+  adminTab: { paddingHorizontal: 20, paddingVertical: 10, marginHorizontal: 5, borderRadius: 20, borderWidth: 2, height: 45 },
+  adminTabText: { fontWeight: 'bold', fontSize: 16 },
+  adminStatsBox: { position: 'absolute', bottom: 100, backgroundColor: 'rgba(0,0,0,0.8)', padding: 15, borderRadius: 10, zIndex: 10, alignItems: 'center' },
+  adminStatsText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
+  adminStatsTextSub: { color: '#aaa', fontSize: 14, marginTop: 5 },
+  axesContainer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1 },
+  yAxis: { position: 'absolute', left: 40, top: 100, bottom: 40, width: 2, backgroundColor: 'rgba(255,255,255,0.4)' },
+  xAxis: { position: 'absolute', left: 40, bottom: 40, right: 40, height: 2, backgroundColor: 'rgba(255,255,255,0.4)' },
+  coordOrigin: { position: 'absolute', left: 45, bottom: 20, color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: 'bold' },
+  coordYMax: { position: 'absolute', left: 45, top: 80, color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: 'bold' },
+  coordXMax: { position: 'absolute', right: 40, bottom: 20, color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: 'bold' },
+  leaderboardBox: { width: '80%', maxWidth: 400, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 15, padding: 10, marginBottom: 20, maxHeight: 300 },
+  leaderboardRow: { flexDirection: 'row', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
+  leaderboardRank: { color: '#bfff00', width: 30, fontWeight: 'bold', fontSize: 18 },
+  leaderboardName: { color: 'white', flex: 1, fontSize: 18 },
+  leaderboardScore: { color: '#00e5ff', fontWeight: 'bold', fontSize: 18 },
+  topHeaderBar: { position: 'absolute', top: 15, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 15 },
+  dynamicTitleText: { fontSize: 24, fontWeight: 'bold', color: 'white', textShadowColor: 'rgba(255,105,180,0.5)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 3, flex: 1, textAlign: 'center' },
+  headerBtn: { backgroundColor: 'rgba(255,255,255,0.15)', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12 },
+  headerBtnText: { color: 'white', fontSize: 11, fontWeight: 'bold' },
+  tutorialText: { color: 'white', fontSize: 22, fontWeight: 'bold', marginBottom: 15, textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 2 }
+});
